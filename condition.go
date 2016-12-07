@@ -1,8 +1,8 @@
 package gosync
 
 import (
-	"errors"
 	"runtime"
+	"sync"
 	"time"
 )
 
@@ -11,14 +11,19 @@ type Condition struct {
 	sg      *Group
 	channel chan bool
 	mutex   *Mutex
+
+	control     *sync.Mutex
+	interrupted bool
 }
 
 // NewCondition creates a new condition in the current SyncGroup with the given Mutex.
 func (instance *Group) NewCondition(mutex *Mutex) *Condition {
 	result := &Condition{
-		sg:      instance,
-		channel: make(chan bool),
-		mutex:   mutex,
+		sg:          instance,
+		channel:     make(chan bool),
+		mutex:       mutex,
+		control:     new(sync.Mutex),
+		interrupted: false,
 	}
 	runtime.SetFinalizer(result, finalizeConditionInstance)
 	return result
@@ -36,7 +41,7 @@ func (instance *Condition) Wait(duration time.Duration) error {
 
 func (instance *Condition) wait(duration time.Duration, guarded bool) error {
 	sg := (*instance).sg
-	sg.append(instance)
+	sg.add(instance)
 	if guarded {
 		instance.doUnlock()
 		defer instance.doLock()
@@ -70,7 +75,7 @@ func (instance *Condition) send() (bool, error) {
 				if s != "send on closed channel" {
 					panic(p)
 				} else {
-					err = errors.New("Signal interrupted.")
+					err = InterruptedError{}
 				}
 			} else {
 				panic(p)
@@ -110,8 +115,33 @@ func (instance *Condition) Broadcast() error {
 // Interrupt interrupts every possible current running Wait() method of this instance.
 // In this instance, nobody will be able to call Wait() from this moment on.
 func (instance *Condition) Interrupt() {
+	instance.control.Lock()
+	defer instance.control.Unlock()
+
 	closeChannel(instance.channel)
 	instance.mutex.Interrupt()
+
+	instance.interrupted = true
+}
+
+func (instance *Condition) IsInterrupted() bool {
+	instance.control.Lock()
+	defer instance.control.Unlock()
+
+	return instance.interrupted
+}
+
+func (instance *Condition) Reset() error {
+	instance.control.Lock()
+	defer instance.control.Unlock()
+
+	if !instance.interrupted {
+		return nil
+	}
+
+	instance.channel = make(chan bool, 1)
+
+	return nil
 }
 
 // Mutex returns the instance of this Condition.

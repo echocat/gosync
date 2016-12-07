@@ -10,7 +10,10 @@ import (
 type SleepTest struct{}
 
 func (s *SleepTest) TestInterrupt(c *C) {
-	sg := NewGroup().NewGroup()
+	mainGroup, err := NewGroup()
+	c.Assert(err, IsNil)
+	sg, err := mainGroup.NewGroup()
+	c.Assert(err, IsNil)
 	start := time.Now()
 	go func() {
 		time.Sleep(10 * time.Millisecond)

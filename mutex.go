@@ -1,8 +1,8 @@
 package gosync
 
 import (
-	"errors"
 	"runtime"
+	"sync"
 	"time"
 )
 
@@ -10,20 +10,25 @@ import (
 type Mutex struct {
 	sg      *Group
 	channel chan bool
+
+	control     *sync.Mutex
+	interrupted bool
 }
 
 // NewMutex creates a new instance of Mutex in the current SyncGroup.
 func (instance *Group) NewMutex() *Mutex {
 	result := &Mutex{
-		sg:      instance,
-		channel: make(chan bool, 1),
+		sg:          instance,
+		channel:     make(chan bool, 1),
+		control:     new(sync.Mutex),
+		interrupted: false,
 	}
 	runtime.SetFinalizer(result, finalizeMutexInstance)
 	return result
 }
 
 func finalizeMutexInstance(mutex *Mutex) {
-	closeChannel(mutex.channel)
+	mutex.Interrupt()
 }
 
 // Lock locks the current thread to this mutex.
@@ -38,7 +43,7 @@ func (instance *Mutex) Lock() error {
 				if s != "send on closed channel" {
 					panic(p)
 				} else {
-					err = errors.New("Lock interrupted.")
+					err = InterruptedError{}
 				}
 			} else {
 				panic(p)
@@ -52,7 +57,7 @@ func (instance *Mutex) Lock() error {
 		if err != nil {
 			return err
 		}
-		return errors.New("Lock interrupted.")
+		return InterruptedError{}
 	}
 }
 
@@ -83,5 +88,30 @@ func (instance *Mutex) TryLock(timeout time.Duration) bool {
 // Interrupt interrupts every possible current running Lock() and TryLock() method of this instance.
 // In this instance, nobody will be able to call Lock() and TryLock() from this moment on.
 func (instance *Mutex) Interrupt() {
+	instance.control.Lock()
+	defer instance.control.Unlock()
+
 	closeChannel(instance.channel)
+
+	instance.interrupted = true
+}
+
+func (instance *Mutex) IsInterrupted() bool {
+	instance.control.Lock()
+	defer instance.control.Unlock()
+
+	return instance.interrupted
+}
+
+func (instance *Mutex) Reset() error {
+	instance.control.Lock()
+	defer instance.control.Unlock()
+
+	if !instance.interrupted {
+		return nil
+	}
+
+	instance.channel = make(chan bool, 1)
+
+	return nil
 }
